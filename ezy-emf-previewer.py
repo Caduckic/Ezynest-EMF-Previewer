@@ -161,9 +161,11 @@ class DropZone(FloatLayout):
         self.image_index_label.pos = (300, 20)
 
         self.label = Label(
-            text="Drag & Drop an XML File Here",
+            text='Drag & Drop "pics.xml" File Here',
             size_hint=(None, None),
-            pos_hint={"center_x": 0.5, "center_y": 0.5}
+            pos_hint={"center_x": 0.5, "center_y": 0.5},
+            color=(0,0,0,1),
+            font_size=30
         )
 
         self.add_widget(self.label)
