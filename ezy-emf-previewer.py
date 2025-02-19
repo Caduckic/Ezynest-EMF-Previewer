@@ -1,6 +1,4 @@
-import tkinter as tk
-from tkinterdnd2 import DND_FILES, TkinterDnD
-from PIL import Image, ImageTk
+from PIL import Image
 import tempfile
 import subprocess
 from lxml import etree
@@ -8,6 +6,15 @@ import base64
 import cairosvg
 import os
 import io
+
+from kivy.app import App
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.label import Label
+from kivy.uix.image import Image as ImageKv
+from kivy.uix.button import Button
+from kivy.core.window import Window
+from kivy.graphics import Color, Rectangle
+from kivy.graphics.texture import Texture
 
 def extract_emf_from_xml(xml_path):
     emf_data_list = []
@@ -53,14 +60,15 @@ def convert_emf_to_image(emf_datas):
                     svg_data = f.read()
 
                 png_data = cairosvg.svg2png(bytestring=svg_data, scale=2)
-                image = Image.open(io.BytesIO(png_data))
+                image = Image.open(io.BytesIO(png_data)).convert("RGBA")
+                image = image.transpose(Image.FLIP_TOP_BOTTOM)
 
                 os.remove(emf_path)
                 os.remove(svg_path)
 
                 width, height = image.size
                 cropped_image = image.crop((0, 340, width, height - 340))
-                # upscaled_image = upscale_image(cropped_image, scale_factor=2)
+                upscaled_image = upscale_image(cropped_image, scale_factor=2)
                 images.append(cropped_image)
             else:
                 print(f"unoconv failed: {process.stderr.decode()}")
@@ -70,7 +78,15 @@ def convert_emf_to_image(emf_datas):
         print(f"EMF converstion failed: {e}")
         return None
     
-    return images
+    textures = []
+
+    for image in images:
+        texture = Texture.create(size=image.size, colorfmt="rgba")
+        texture.blit_buffer(image.tobytes(), colorfmt="rgba", bufferfmt="ubyte")
+
+        textures.append(texture)
+
+    return textures
 
 def modify_svg_bg_color(svg_path, new_color="rgb(255,255,255)"):
     parser = etree.XMLParser(remove_blank_text=True)
@@ -102,88 +118,107 @@ def modify_svg_bg_color(svg_path, new_color="rgb(255,255,255)"):
 
     tree.write(svg_path, xml_declaration=True, encoding="utf-8")
 
-def on_drop(event):
+def on_drop(file_path):
+    file_path = file_path.decode("utf-8")
     global image_index
     image_index = 0
 
-    file_path = event.data.strip().replace("{", "").replace("}", "")
     if file_path.lower().endswith(".xml"):
         emf_data = extract_emf_from_xml(file_path)
         if emf_data:
-            images = convert_emf_to_image(emf_data)
-            if images:
+            textures = convert_emf_to_image(emf_data)
+            if textures:
                 # page_text.set(f"Sheet {image_index + 1} of {len(images)}")
-                display_image(images[image_index])
+                return textures
+                # return display_image(images[image_index])
 
 def upscale_image(image, scale_factor=2):
     new_size = (image.width * scale_factor, image.height * scale_factor)
     return image.resize(new_size, Image.LANCZOS)
 
-def display_image(image):
-    global img, img_tk
+class DropZone(FloatLayout):
+    def __init__(self, **kwargs):
+        super(DropZone, self).__init__(**kwargs)
+        self.image_widget = ImageKv(
+            size_hint=(0.9, 1.8),
+            allow_stretch=True,
+            keep_ratio=True,
+            pos_hint={"center_x": 0.5, "center_y": 0.5}
+        )
+        self.textures = []
+        self.image_index = 0
 
-    img = image
-    resize_image()
+        self.previous_button = Button(text="Previous Sheet", size_hint=(None, None), size=(120, 50))
+        self.previous_button.bind(on_press=lambda instance: self.change_image_index(instance, 1))
+        self.previous_button.pos = (20, 20)
 
-def resize_image(event=None):
-    global img, img_tk
+        self.next_button = Button(text="Next Sheet", size_hint=(None, None), size=(120, 50))
+        self.next_button.bind(on_press=lambda instance: self.change_image_index(instance, 1))
+        self.next_button.pos = (160, 20)
 
-    if img:
-        window_width = root.winfo_width()
-        window_height = root.winfo_height()
+        self.image_index_label = Label(text="", size_hint=(1.0, 1.0), size=(200, 50), color=(0,0,0,1), font_size=30, halign="left")
+        self.image_index_label.bind(size=self.image_index_label.setter("text_size"))
+        self.image_index_label.pos = (300, 20)
 
-        img_resized = img.copy()
-        img_resized.thumbnail((window_width, window_height), Image.LANCZOS)
+        self.label = Label(
+            text="Drag & Drop an XML File Here",
+            size_hint=(None, None),
+            pos_hint={"center_x": 0.5, "center_y": 0.5}
+        )
 
-        img_tk = ImageTk.PhotoImage(img_resized)
-        label.config(image=img_tk)
+        self.add_widget(self.label)
 
-def next_image():
-    global images
-    global image_index
+        # self.add_widget(self.image_widget)
 
-    image_index += 1
-    if image_index == len(images):
-        image_index = 0
+        with self.canvas.before:
+            Color(0.8, 0.8, 0.8, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        
+        self.bind(pos=self.update_bg, size=self.update_bg)
 
-    page_text.set(f"Sheet {image_index + 1} of {len(images)}")
+    def change_image_index(self, window, offset):
+        if abs(offset) == 1:
+            self.image_index += offset
+            if self.image_index >= len(self.textures):
+                self.image_index -= len(self.textures)
+            if self.image_index < 0:
+                self.image_index += len(self.textures)
+            
+            self.image_index_label.text = f"{self.image_index+1}/{len(self.textures)}"
+            self.display_image(self.image_index)
 
-    display_image(images[image_index])
 
-def previous_image():
-    global images
-    global image_index
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
 
-    image_index -= 1
-    if image_index < 0:
-        image_index = len(images) - 1
+    def on_drop_file(self, window, file_path):
+        self.textures = on_drop(file_path)
+        if self.textures is not None:
+            self.image_index = 0
+            self.clear_widgets()
+            self.add_widget(self.image_widget)
+            self.add_widget(self.next_button)
+            self.add_widget(self.previous_button)
+
+            self.image_index_label.text = f"{self.image_index+1}/{len(self.textures)}"
+
+            self.add_widget(self.image_index_label)
+            
+            self.display_image(self.image_index)
     
-    page_text.set(f"Sheet {image_index + 1} of {len(images)}")
+    def display_image(self, index):
+        self.image_widget.texture = self.textures[index]
+        # self.add_widget(self.image_widget)
+
+
+class EzyEmfPreviewer(App):
+    def build(self):
+        layout = FloatLayout()
+        drop_zone = DropZone()
+        layout.add_widget(drop_zone)
+        Window.bind(on_dropfile=drop_zone.on_drop_file)
+        return layout
     
-    display_image(images[image_index])
-
-root = TkinterDnD.Tk()
-root.title("Ezy-EMF Viewer")
-root.geometry("500x500")
-
-label = tk.Label(root, text="Drag & Drop an XML File Here", font=("Arial", 14))
-label.pack(fill="both", expand=True)
-
-previous_button = tk.Button(root, text="previous", command=previous_image)
-previous_button.place(x=10, y=10)
-
-next_button = tk.Button(root, text="next", command=next_image)
-next_button.place(x=100, y=10)
-
-page_text = tk.StringVar(root, "Sheet 0 of 0")
-
-page_label = tk.Label(root, textvariable=page_text, font=("Arial", 18))
-page_label.place(x=10, y=50)
-
-root.drop_target_register(DND_FILES)
-root.dnd_bind("<<Drop>>", on_drop)
-
-root.bind("<Configure>", resize_image)
-
-root.mainloop()
-
+if __name__ == "__main__":
+    EzyEmfPreviewer().run()
